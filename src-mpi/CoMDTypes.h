@@ -124,6 +124,8 @@ typedef struct SimFlatSt
    int *tmp_sort;		// temp array for merge sort
    char *gpu_atoms_buf;		// buffer for atoms exchange
    char *gpu_force_buf;		// buffer for forces exchange
+
+   int ljInterpolation;     //<! compute Lennard-Jones potential using interpolation
    
 } SimFlat;
 

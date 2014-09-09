@@ -87,10 +87,9 @@ void LJ_Force_thread_atom(SimGpu sim, AtomListGpu list)
 
 	// update energy
         ie += 0.5 * eLocal;
-
         // different formulation to avoid sqrt computation
         real_t fr = 4.0*epsilon*r6*r2*(12.0*r6 - 6.0);
-  
+
         // update forces
         ifx += fr * dx;
         ify += fr * dy;
@@ -104,5 +103,88 @@ void LJ_Force_thread_atom(SimGpu sim, AtomListGpu list)
   sim.atoms.f.z[iOff] = ifz;
 
   sim.atoms.e[iOff] = ie * 4 * epsilon;
+}
+
+__global__
+__launch_bounds__(THREAD_ATOM_CTA, THREAD_ATOM_ACTIVE_CTAS)
+void LJ_Force_thread_atom_interpolation(SimGpu sim, AtomListGpu list)
+{
+  int tid = blockIdx.x * blockDim.x + threadIdx.x; 
+  if (tid >= list.n) return;
+
+  // compute box ID and local atom ID
+  int iAtom = list.atoms[tid];
+  int iBox = list.cells[tid]; 
+
+  real_t rCut = sim.lj_pot.cutoff;
+  real_t rCut2 = rCut*rCut;
+
+  // zero out forces and energy
+  real_t ifx = 0;
+  real_t ify = 0;
+  real_t ifz = 0;
+  real_t ie = 0;
+
+  real_t *const __restrict__ rx = sim.atoms.r.x;
+  real_t *const __restrict__ ry = sim.atoms.r.y;
+  real_t *const __restrict__ rz = sim.atoms.r.z;
+
+
+  // fetch position
+  int iOff = iBox * MAXATOMS + iAtom;
+  real_t irx = sim.atoms.r.x[iOff];
+  real_t iry = sim.atoms.r.y[iOff];
+  real_t irz = sim.atoms.r.z[iOff];
+ 
+  // loop over my neighbor cells
+#pragma unroll
+  for (int j = 0; j < N_MAX_NEIGHBORS; j++) 
+  { 
+    int jBox = sim.neighbor_cells[iBox * N_MAX_NEIGHBORS + j];
+
+    // loop over all atoms in the neighbor cell 
+    for (int jAtom = 0; jAtom < sim.boxes.nAtoms[jBox]; jAtom++) 
+    {  
+      int jOff = jBox * MAXATOMS + jAtom; 
+
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 350
+      real_t dx = irx - __ldg(&rx[jOff]);
+      real_t dy = iry - __ldg(&ry[jOff]);
+      real_t dz = irz - __ldg(&rz[jOff]);
+#else
+      real_t dx = irx - rx[jOff];
+      real_t dy = iry - ry[jOff];
+      real_t dz = irz - rz[jOff];
+#endif
+      // distance^2
+      real_t r2 = dx*dx + dy*dy + dz*dz;
+
+      // no divide by zero
+      if (r2 <= rCut2 && r2 > 0.0) 
+      {
+        real_t r = sqrt(r2);
+        
+        real_t etmp, ftmp;
+        interpolate(sim.lj_pot.lj_interpolation, r, etmp, ftmp);
+
+	// update energy
+        ie += 0.5 * etmp;
+
+        // different formulation to avoid sqrt computation
+        real_t fr = -ftmp/r;
+
+        // update forces
+        ifx += fr * dx;
+        ify += fr * dy;
+        ifz += fr * dz;
+      } 
+    } // loop over all atoms
+  } // loop over neighbor cells
+
+  sim.atoms.f.x[iOff] = ifx;
+  sim.atoms.f.y[iOff] = ify;
+  sim.atoms.f.z[iOff] = ifz;
+
+  sim.atoms.e[iOff] = ie;
 }
 

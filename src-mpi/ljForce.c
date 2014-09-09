@@ -138,7 +138,7 @@ int ljForce(SimFlat* sim)
    if(sim->method == CPU_NL)
            ljForceCpuNL(sim);
    else
-           ljForceGpu(sim->gpu);
+           ljForceGpu(sim->gpu, sim->ljInterpolation);
 
    return 0;
 }

@@ -340,7 +340,7 @@ void initLJinterpolation(LjPotentialGpu * pot)
    {        
        real_t x = pot->lj_interpolation.x0 + (i-1)/pot->lj_interpolation.invDx;
        real_t r2 = 1.0/(x*x);
-       real_t r6 = r2*r2*r2;
+       real_t r6 = s6 * r2*r2*r2;
        temp[i] = 4 * epsilon * (r6 * (r6 - 1.0) - eShift);
   }
   cudaMemcpy(pot->lj_interpolation.values, temp, (pot->lj_interpolation.n+3)*sizeof(real_t), cudaMemcpyHostToDevice);
@@ -393,7 +393,8 @@ void CopyDataToGpu(SimFlat *sim, int do_eam)
     gpu->lj_pot.sigma = pot->sigma;
     gpu->lj_pot.cutoff = pot->cutoff;
     gpu->lj_pot.epsilon = pot->epsilon;
-    initLJinterpolation(&(gpu->lj_pot));
+    if(sim->ljInterpolation)
+        initLJinterpolation(&(gpu->lj_pot));
   }
 
   int total_boxes = sim->boxes->nTotalBoxes;

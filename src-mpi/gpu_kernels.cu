@@ -58,12 +58,15 @@
 #undef EXTERN_C
 
 extern "C"
-void ljForceGpu(SimGpu sim)
+void ljForceGpu(SimGpu sim, int interpolation)
 {
   cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
   int grid = (sim.a_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
   int block = THREAD_ATOM_CTA;
-  LJ_Force_thread_atom<<<grid, block>>>(sim, sim.a_list);
+  if(interpolation == 0)
+      LJ_Force_thread_atom<<<grid, block>>>(sim, sim.a_list);
+  else
+      LJ_Force_thread_atom_interpolation<<<grid, block>>>(sim, sim.a_list);
 }
 
 template<int step>
