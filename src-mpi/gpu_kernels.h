@@ -10,14 +10,14 @@ EXTERN_C void ljForceGpu(SimGpu sim, int interpolation);
 
 EXTERN_C void updateNeighborsGpu(SimGpu sim, int * temp);
 EXTERN_C void updateNeighborsGpuAsync(SimGpu sim, int * temp, int nCells, int * cellList, cudaStream_t stream);
-EXTERN_C void eamForce1Gpu(SimGpu sim, int method);
-EXTERN_C void eamForce2Gpu(SimGpu sim, int method);
-EXTERN_C void eamForce3Gpu(SimGpu sim, int method);
+EXTERN_C void eamForce1Gpu(SimGpu sim, int method, int spline);
+EXTERN_C void eamForce2Gpu(SimGpu sim, int method, int spline);
+EXTERN_C void eamForce3Gpu(SimGpu sim, int method, int spline);
 
 // latency hiding opt
-EXTERN_C void eamForce1GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream);
-EXTERN_C void eamForce2GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream);
-EXTERN_C void eamForce3GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream);
+EXTERN_C void eamForce1GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream, int spline);
+EXTERN_C void eamForce2GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream, int spline);
+EXTERN_C void eamForce3GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream, int spline);
 
 
 EXTERN_C void emptyNeighborListGpu(SimGpu * sim, int boundaryFlag);
@@ -46,9 +46,6 @@ EXTERN_C void sortAtomsGpu(SimFlat *sim, cudaStream_t stream);
 
 EXTERN_C int neighborListUpdateRequiredGpu(SimGpu* sim);
 EXTERN_C void updateNeighborsGpuAsync(SimGpu sim, int *temp, int num_cells, int *cell_list, cudaStream_t stream);
-
-EXTERN_C void eamForce1GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream);
-EXTERN_C void eamForce2GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream);
 
 EXTERN_C void emptyHashTableGpu(HashTableGpu* hashTable);
 #endif

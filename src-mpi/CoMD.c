@@ -237,6 +237,7 @@ SimFlat* initSimulation(Command cmd)
    sim->atoms = initAtoms(sim->boxes, skinDistance);
 
    sim->ljInterpolation = cmd.ljInterpolation;
+   sim->spline = cmd.spline;
 
    // create lattice with desired temperature and displacement.
    createFccLattice(cmd.nx, cmd.ny, cmd.nz, latticeConstant, sim);

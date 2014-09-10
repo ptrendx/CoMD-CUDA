@@ -217,6 +217,7 @@ Command parseCommandLine(int argc, char** argv)
    cmd.gpuProfile = 0;
 
    cmd.ljInterpolation = 0;
+   cmd.spline = 0;
 
    int help=0;
    // add arguments for processing.  Please update the html documentation too!
@@ -244,7 +245,8 @@ Command parseCommandLine(int argc, char** argv)
    // gpu-specific
    addArg("gpuAsync",   'a', 1, 'i',  &(cmd.gpuAsync),     0,             "communicaton hiding optimization using streams");
    addArg("gpuProfile", 's', 0, 'i',  &(cmd.gpuProfile),   0,             "profiling mode: reboxing disabled, single kernel run");
-   addArg("ljInterpolation", 'I', 0, 'i', &(cmd.ljInterpolation), 0,   "compute Lennard-Jones potential using interpolation");
+   addArg("ljInterpolation", 'I', 0, 'i', &(cmd.ljInterpolation), 0,   "compute Lennard-Jones potential using interpolation (gpu only)");
+   addArg("spline", 'P', 0, 'i', &(cmd.spline), 0, "use splines for interpolation (gpu only)");
 
    processArgs(argc,argv);
 

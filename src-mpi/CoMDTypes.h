@@ -126,6 +126,7 @@ typedef struct SimFlatSt
    char *gpu_force_buf;		// buffer for forces exchange
 
    int ljInterpolation;     //<! compute Lennard-Jones potential using interpolation
+   int spline;              //<! use splines for interpolation
    
 } SimFlat;
 

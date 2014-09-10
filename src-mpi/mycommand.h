@@ -36,6 +36,7 @@ typedef struct CommandSt
    int gpuProfile;	//!< skip redistribute routines and run only one step of compute forces
 
    int ljInterpolation; //!< compute Lennard-Jones potential using interpolation
+   int spline;
 } Command;
 
 /// Process command line arguments into an easy to handle structure.

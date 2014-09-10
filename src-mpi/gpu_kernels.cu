@@ -100,55 +100,86 @@ int compute_eam_smem_size(SimGpu sim)
 }
 
 template<int step>
-void eamForce(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream = NULL)
+void eamForce(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, int spline, cudaStream_t stream = NULL)
 {
-  assert(method < CPU_NL);
-  if (method == THREAD_ATOM) { 
-    
-    int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
-    int block = THREAD_ATOM_CTA;
-    EAM_Force_thread_atom<step><<<grid, block, 0, stream>>>(sim, atoms_list);
-  }
-  else if (method == WARP_ATOM) {
-    int block = WARP_ATOM_CTA;
-    int grid = (atoms_list.n + (WARP_ATOM_CTA/WARP_SIZE)-1)/ (WARP_ATOM_CTA/WARP_SIZE);
-    EAM_Force_warp_atom<step><<<grid, block, 0, stream>>>(sim, atoms_list);
-  } 
-  else if (method == CTA_CELL) {
-    cudaDeviceSetCacheConfig(cudaFuncCachePreferShared); // necessary for good occupancy
-    int block = CTA_CELL_CTA;
-    int grid = num_cells;
-    int smem = compute_eam_smem_size<step>(sim);
-    EAM_Force_cta_cell<step><<<grid, block, smem, stream>>>(sim, cells_list);
-    cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
-  }else if (method == THREAD_ATOM_NL) { 
-    int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
-    int block = THREAD_ATOM_CTA;
-    EAM_Force_thread_atom_NL<step><<<grid, block, 0, stream>>>(sim, atoms_list);
-  }else if (method == WARP_ATOM_NL) { 
-    int grid1 = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
-    int grid2 = (atoms_list.n * KERNEL_PACKSIZE + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
-    int block = THREAD_ATOM_CTA;
-    if(step == 2)
-        EAM_Force_thread_atom_NL<step><<<grid1, block, 0, stream>>>(sim, atoms_list);
+    assert(method < CPU_NL);
+    if(spline)
+    {
+        if (method == THREAD_ATOM) { 
+
+            int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
+            int block = THREAD_ATOM_CTA;
+            EAM_Force_thread_atom<step, true><<<grid, block, 0, stream>>>(sim, atoms_list);
+        }
+        else if (method == WARP_ATOM) {
+            int block = WARP_ATOM_CTA;
+            int grid = (atoms_list.n + (WARP_ATOM_CTA/WARP_SIZE)-1)/ (WARP_ATOM_CTA/WARP_SIZE);
+            EAM_Force_warp_atom<step, true><<<grid, block, 0, stream>>>(sim, atoms_list);
+        } 
+        else if (method == CTA_CELL) {
+            cudaDeviceSetCacheConfig(cudaFuncCachePreferShared); // necessary for good occupancy
+            int block = CTA_CELL_CTA;
+            int grid = num_cells;
+            int smem = compute_eam_smem_size<step>(sim);
+            EAM_Force_cta_cell<step, true><<<grid, block, smem, stream>>>(sim, cells_list);
+            cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
+        }else if (method == THREAD_ATOM_NL) { 
+            int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
+            int block = THREAD_ATOM_CTA;
+            EAM_Force_thread_atom_NL<step, true><<<grid, block, 0, stream>>>(sim, atoms_list);
+        }else if (method == WARP_ATOM_NL) { 
+            int grid = (atoms_list.n * KERNEL_PACKSIZE + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
+            int block = THREAD_ATOM_CTA;
+            EAM_Force_warp_atom_NL<step, KERNEL_PACKSIZE, MAXNEIGHBORLISTSIZE, true><<<grid, block, 0, stream>>>(sim, atoms_list, sim.eam_pot.cutoff * sim.eam_pot.cutoff);
+        }
+
+    }
     else
-        EAM_Force_warp_atom_NL<step, KERNEL_PACKSIZE, MAXNEIGHBORLISTSIZE ><<<grid2, block, 0, stream>>>(sim, atoms_list, sim.eam_pot.cutoff * sim.eam_pot.cutoff);
-  }
+    {
+        if (method == THREAD_ATOM) { 
+
+            int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
+            int block = THREAD_ATOM_CTA;
+            EAM_Force_thread_atom<step, false><<<grid, block, 0, stream>>>(sim, atoms_list);
+        }
+        else if (method == WARP_ATOM) {
+            int block = WARP_ATOM_CTA;
+            int grid = (atoms_list.n + (WARP_ATOM_CTA/WARP_SIZE)-1)/ (WARP_ATOM_CTA/WARP_SIZE);
+            EAM_Force_warp_atom<step, false><<<grid, block, 0, stream>>>(sim, atoms_list);
+        } 
+        else if (method == CTA_CELL) {
+            cudaDeviceSetCacheConfig(cudaFuncCachePreferShared); // necessary for good occupancy
+            int block = CTA_CELL_CTA;
+            int grid = num_cells;
+            int smem = compute_eam_smem_size<step>(sim);
+            EAM_Force_cta_cell<step, false><<<grid, block, smem, stream>>>(sim, cells_list);
+            cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
+        }else if (method == THREAD_ATOM_NL) { 
+            int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
+            int block = THREAD_ATOM_CTA;
+            EAM_Force_thread_atom_NL<step, false><<<grid, block, 0, stream>>>(sim, atoms_list);
+        }else if (method == WARP_ATOM_NL) { 
+            int grid = (atoms_list.n * KERNEL_PACKSIZE + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
+            int block = THREAD_ATOM_CTA;
+            EAM_Force_warp_atom_NL<step, KERNEL_PACKSIZE, MAXNEIGHBORLISTSIZE, false><<<grid, block, 0, stream>>>(sim, atoms_list, sim.eam_pot.cutoff * sim.eam_pot.cutoff);
+        }
+
+    }
 }
 
 template<>
-void eamForce<2>(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream)
+void eamForce<2>(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, int spline, cudaStream_t stream)
 {
   assert(method < CPU_NL);
   if (method == THREAD_ATOM || method == WARP_ATOM || method == THREAD_ATOM_NL || method == WARP_ATOM_NL) {
     int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
     int block = THREAD_ATOM_CTA;
-    EAM_Force_thread_atom<2><<<grid, block, 0, stream>>>(sim, atoms_list);
+    EAM_Force_thread_atom2<<<grid, block, 0, stream>>>(sim, atoms_list);
   }
   else if (method == CTA_CELL) {
     int grid = num_cells;
     int block = CTA_CELL_CTA;
-    EAM_Force_cta_cell<2><<<grid, block, 0, stream>>>(sim, cells_list);
+    EAM_Force_cta_cell2<<<grid, block, 0, stream>>>(sim, cells_list);
   }
 }
 
@@ -179,42 +210,42 @@ void updateNeighborsGpu(SimGpu sim, int *temp)
 }
 
 extern "C"
-void eamForce1Gpu(SimGpu sim, int method)
+void eamForce1Gpu(SimGpu sim, int method, int spline)
 {
   cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
-  eamForce<1>(sim, sim.a_list, sim.boxes.nLocalBoxes, NULL, method);
+  eamForce<1>(sim, sim.a_list, sim.boxes.nLocalBoxes, NULL, method, spline);
 }
 
 // async launch, latency hiding opt
 extern "C" 
-void eamForce1GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream)
+void eamForce1GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream, int spline)
 {
   cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
-  eamForce<1>(sim, atoms_list, num_cells, cells_list, method, stream);
+  eamForce<1>(sim, atoms_list, num_cells, cells_list, method,spline, stream);
 }
 
 extern "C"
-void eamForce2Gpu(SimGpu sim, int method)
+void eamForce2Gpu(SimGpu sim, int method, int spline)
 {
-  eamForce<2>(sim, sim.a_list, sim.boxes.nLocalBoxes, NULL, method);
+  eamForce<2>(sim, sim.a_list, sim.boxes.nLocalBoxes, NULL, method, spline);
 }
 
 extern "C"
-void eamForce2GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream)
+void eamForce2GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream, int spline)
 {
-  eamForce<2>(sim, atoms_list, num_cells, cells_list, method, stream);
+  eamForce<2>(sim, atoms_list, num_cells, cells_list, method, spline, stream);
 }
 
 extern "C"
-void eamForce3Gpu(SimGpu sim, int method)
+void eamForce3Gpu(SimGpu sim, int method, int spline)
 {
-  eamForce<3>(sim, sim.a_list, sim.boxes.nLocalBoxes, NULL, method);
+  eamForce<3>(sim, sim.a_list, sim.boxes.nLocalBoxes, NULL, method, spline);
 }
 
 extern "C" 
-void eamForce3GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream)
+void eamForce3GpuAsync(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list, int method, cudaStream_t stream, int spline)
 {
-  eamForce<3>(sim, atoms_list, num_cells, cells_list, method, stream);
+  eamForce<3>(sim, atoms_list, num_cells, cells_list, method, spline, stream);
 }
 
 extern "C"
