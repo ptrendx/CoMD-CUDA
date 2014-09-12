@@ -91,10 +91,11 @@ void interpolate(InterpolationObjectGpu table, real_t r, real_t &f, real_t &df)
 /// \param [in] r2 Square of point where function value is needed.
 /// \param [out] f The interpolated value of f(r).
 /// \param [out] df The interpolated value of 1/r*df(r)/dr.
+template <int pref>
 __inline__ __device__
-void interpolateSpline(InterpolationSplineObjectGpu table, real_t r2, real_t &f, real_t &df)
+void interpolateSpline(InterpolationSplineObjectGpu table, real_t r2, real_t &f, real_t &df, real_t * pref_table)
 {
-   const real_t* tt = table.coefficients; // alias
+   const real_t* tt = table.coefficients + pref * table.n; // alias
 
    float r = sqrt_approx(r2);
 
@@ -105,23 +106,37 @@ void interpolateSpline(InterpolationSplineObjectGpu table, real_t r2, real_t &f,
    // compute index
    r = r * table.invDx - table.invDxXx0;
    
-   real_t ri = floor(r);
+   float ri = floorf(r);
    
-   int ii = 4*(int)ri;
+   int ii = (int)ri;
+
+   real_t a,b,c,d;
 
     // using LDG on Kepler only
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 350  
-    real_t a = __ldg(tt + ii);
-    real_t b = __ldg(tt + ii + 1);
-    real_t c = __ldg(tt + ii + 2);
-    real_t d = __ldg(tt + ii + 3);
+    if(pref < 1)
+        a = __ldg(tt + ii*4);
+    else
+        a = pref_table[ii];
+    if(pref < 2)
+        b = __ldg(tt + ii*(4-pref) + (1-pref));
+    else
+        b = pref_table[ii + table.n];
+    c = __ldg(tt + ii*(4-pref) + (2-pref));
+    d = __ldg(tt + ii*(4-pref) + (3-pref));
 #else
-    real_t a = tt[ii];
-    real_t b = tt[ii + 1];
-    real_t c = tt[ii + 2];
-    real_t d = tt[ii + 3];
+    if(pref < 1)
+        a = tt[ii*4];
+    else
+        a = pref_table[ii];
+    if(pref < 2)
+        b = tt[ii*(4-pref) + (1-pref)];
+    else
+        b = pref_table[ii + table.n];
+    c = tt[ii*(4-pref) + (2-pref)];
+    d = tt[ii*(4-pref) + (3-pref)];
 #endif
-   
+
      real_t tmp = a*r2+b;
      f = (tmp*r2+c)*r2+d;
      df =2*((3*tmp-b)*r2+c);

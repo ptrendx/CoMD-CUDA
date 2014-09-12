@@ -104,13 +104,13 @@ void EAM_Force_thread_atom(SimGpu sim, AtomListGpu list)
         else
         {
             if(step == 1) {
-                interpolateSpline(sim.eam_pot.phiS, r2, phiTmp, dPhi);
-                interpolateSpline(sim.eam_pot.rhoS, r2, rhoTmp, dRho);
+                interpolateSpline<0>(sim.eam_pot.phiS, r2, phiTmp, dPhi, 0);
+                interpolateSpline<0>(sim.eam_pot.rhoS, r2, rhoTmp, dRho, 0);
             }
             else
             {
                 //step 3
-                interpolateSpline(sim.eam_pot.rhoS, r2, rhoTmp,dRho);
+                interpolateSpline<0>(sim.eam_pot.rhoS, r2, rhoTmp,dRho, 0);
                 dPhi = (sim.eam_pot.dfEmbed[iOff] + sim.eam_pot.dfEmbed[jOff]) * dRho;
             }
 
@@ -226,13 +226,13 @@ void EAM_Force_thread_atom_NL(SimGpu sim, AtomListGpu list)
           else
           {
               if(step == 1) {
-                  interpolateSpline(sim.eam_pot.phiS, r2, phiTmp, dPhi);
-                  interpolateSpline(sim.eam_pot.rhoS, r2, rhoTmp, dRho);
+                  interpolateSpline<0>(sim.eam_pot.phiS, r2, phiTmp, dPhi, 0);
+                  interpolateSpline<0>(sim.eam_pot.rhoS, r2, rhoTmp, dRho, 0);
               }
               else
               {
                   //step 3
-                  interpolateSpline(sim.eam_pot.rhoS, r2, rhoTmp,dRho);
+                  interpolateSpline<0>(sim.eam_pot.rhoS, r2, rhoTmp,dRho, 0);
                   dPhi = (sim.eam_pot.dfEmbed[iOff] + sim.eam_pot.dfEmbed[jOff]) * dRho;
               }
 

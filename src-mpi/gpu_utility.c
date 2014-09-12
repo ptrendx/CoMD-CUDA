@@ -35,6 +35,8 @@
 
 #include "gpu_kernels.h"
 
+static int device;
+
 // fallback for 5.0
 #if (CUDA_VERSION < 5050)
   cudaError_t cudaStreamCreateWithPriority(cudaStream_t *stream, unsigned int flags, int priority) {
@@ -47,9 +49,11 @@ void SetupGpu(int deviceId)
 {
   cudaSetDevice(deviceId);
   
+  device = deviceId;
+
   struct cudaDeviceProp props;
   cudaGetDeviceProperties(&props, deviceId);
-
+    
   char hostname[256];
   gethostname(hostname, sizeof(hostname));
 
@@ -361,7 +365,7 @@ void initLJinterpolation(LjPotentialGpu * pot)
 }
 
 //Algorithm for computing spline coefficients from Numerical Recipes in C, chapter 3.3
-void initSplineCoefficients(real_t * gpu_coefficients, int n, real_t * values, real_t x0, real_t invDx)
+void initSplineCoefficients(real_t * gpu_coefficients, int n, real_t * values, real_t x0, real_t invDx, int prefetch_size)
 {
     real_t *u = (real_t*) malloc(n * sizeof(real_t));
     real_t *y2 = (real_t*) malloc((n+1)*sizeof(real_t));
@@ -404,16 +408,32 @@ void initSplineCoefficients(real_t * gpu_coefficients, int n, real_t * values, r
         real_t y1 = values[i];
         real_t y2 = values[i+1];
         
-        coefficients[i*4] = 1.0/(6.0*(x2-x1))*(d2y2-d2y1);
-        coefficients[i*4+1] = 1.0/(2.0*(x2-x1))*(x2*d2y1-x1*d2y2);
-        coefficients[i*4+2] = 1.0/(x2-x1) * (1.0/6.0*(-3*x2*x2+(x2-x1)*(x2-x1))*d2y1+1.0/6.0*(3*x1*x1-(x2-x1)*(x2-x1))*d2y2-y1+y2);
-        coefficients[i*4+3] = 1/(x2-x1)*(x2*y1-x1*y2+1.0/6.0*d2y1*(x2*x2*x2-x2*(x2-x1)*(x2-x1)) + 1.0/6.0*d2y2*(-x1*x1*x1+x1*(x2-x1)*(x2-x1)));
+        int index[4];
+
+        for(int k = 0; k < prefetch_size; ++k)
+        {
+            index[k] = i + k*n;
+        }
+        for(int k = prefetch_size; k < 4; ++k)
+        {
+            index[k] = prefetch_size*n + (4-prefetch_size)*i + (k-prefetch_size);
+        }
+
+        coefficients[index[0]] = 1.0/(6.0*(x2-x1))*(d2y2-d2y1);
+        coefficients[index[1]] = 1.0/(2.0*(x2-x1))*(x2*d2y1-x1*d2y2);
+        coefficients[index[2]] = 1.0/(x2-x1) * (1.0/6.0*(-3*x2*x2+(x2-x1)*(x2-x1))*d2y1+1.0/6.0*(3*x1*x1-(x2-x1)*(x2-x1))*d2y2-y1+y2);
+        coefficients[index[3]] = 1/(x2-x1)*(x2*y1-x1*y2+1.0/6.0*d2y1*(x2*x2*x2-x2*(x2-x1)*(x2-x1)) + 1.0/6.0*d2y2*(-x1*x1*x1+x1*(x2-x1)*(x2-x1)));
     }
     cudaMemcpy(gpu_coefficients, coefficients, 4 * n * sizeof(real_t), cudaMemcpyHostToDevice);
 
     free(y2);
     free(u);
     free(coefficients);
+}
+
+inline int min(int a, int b)
+{
+    return a < b?a:b;
 }
 
 void CopyDataToGpu(SimFlat *sim, int do_eam)
@@ -480,10 +500,52 @@ void CopyDataToGpu(SimFlat *sim, int do_eam)
         gpu->eam_pot.fS.invDxXx0 = pot->f->invDxXx0;
         gpu->eam_pot.rhoS.invDxXx0 = pot->rho->invDxXx0;
         gpu->eam_pot.phiS.invDxXx0 = pot->phi->invDxXx0;
+       
+        initSplineCoefficients(gpu->eam_pot.fS.coefficients, pot->f->n, pot->f->values, pot->f->x0, pot->f->invDx, 0);
+        
+        //WARP_ATOM_NL method does not use shared memory on its own
+        int shared_prefetch = sim->method == WARP_ATOM_NL; 
 
-        initSplineCoefficients(gpu->eam_pot.fS.coefficients, pot->f->n, pot->f->values, pot->f->x0, pot->f->invDx);
-        initSplineCoefficients(gpu->eam_pot.rhoS.coefficients, pot->rho->n, pot->rho->values, pot->rho->x0, pot->rho->invDx);
-        initSplineCoefficients(gpu->eam_pot.phiS.coefficients, pot->phi->n, pot->phi->values, pot->phi->x0, pot->phi->invDx);
+        if(shared_prefetch)
+        {
+            struct cudaDeviceProp prop;
+            cudaGetDeviceProperties(&prop, device);
+            size_t total_shmem = prop.sharedMemPerMultiprocessor/WARP_ATOM_NL_CTAS;
+            if(prop.major < 3)
+            {
+                total_shmem -= WARP_ATOM_NL_CTA * sizeof(real_t);
+            }
+            
+            if(total_shmem > prop.sharedMemPerBlock)
+                total_shmem = prop.sharedMemPerBlock;
+            
+
+            total_shmem /= sizeof(real_t);
+
+            if(total_shmem/gpu->eam_pot.rhoS.n >= 2)
+            {
+                gpu->eam_pot.rhoS.prefetch_size = 2;
+                initSplineCoefficients(gpu->eam_pot.rhoS.coefficients, pot->rho->n, pot->rho->values, pot->rho->x0, pot->rho->invDx, gpu->eam_pot.rhoS.prefetch_size);
+                total_shmem -= 2*gpu->eam_pot.rhoS.n;
+                gpu->eam_pot.phiS.prefetch_size = min(2, total_shmem/gpu->eam_pot.phiS.n);
+                initSplineCoefficients(gpu->eam_pot.phiS.coefficients, pot->phi->n, pot->phi->values, pot->phi->x0, pot->phi->invDx, gpu->eam_pot.phiS.prefetch_size);
+            }
+            else
+            {
+                gpu->eam_pot.rhoS.prefetch_size = min(2, total_shmem/gpu->eam_pot.rhoS.n);
+                initSplineCoefficients(gpu->eam_pot.rhoS.coefficients, pot->rho->n, pot->rho->values, pot->rho->x0, pot->rho->invDx, gpu->eam_pot.rhoS.prefetch_size);
+                gpu->eam_pot.phiS.prefetch_size = 0;
+                initSplineCoefficients(gpu->eam_pot.phiS.coefficients, pot->phi->n, pot->phi->values, pot->phi->x0, pot->phi->invDx, gpu->eam_pot.phiS.prefetch_size);
+               
+            }
+        }
+        else
+        {
+            gpu->eam_pot.rhoS.prefetch_size = 0;
+            gpu->eam_pot.phiS.prefetch_size = 0;
+            initSplineCoefficients(gpu->eam_pot.rhoS.coefficients, pot->rho->n, pot->rho->values, pot->rho->x0, pot->rho->invDx, 0);
+            initSplineCoefficients(gpu->eam_pot.phiS.coefficients, pot->phi->n, pot->phi->values, pot->phi->x0, pot->phi->invDx, 0);
+        }
     }
   }
   else

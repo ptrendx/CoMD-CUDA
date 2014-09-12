@@ -66,6 +66,8 @@ typedef struct InterpolationSplineObjectGpuSt
     float invDx;
     float invDxXx0;
     real_t * coefficients;
+
+    int prefetch_size;
 } InterpolationSplineObjectGpu;
 
 typedef struct LjPotentialGpuSt

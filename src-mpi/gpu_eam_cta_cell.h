@@ -203,13 +203,13 @@ void EAM_Force_cta_cell(SimGpu sim, int *cells_list)
       else
       {
           if (step == 1) {
-              interpolateSpline(sim.eam_pot.phiS, r2, phiTmp, dPhi);
-              interpolateSpline(sim.eam_pot.rhoS, r2, rhoTmp, dRho);
+              interpolateSpline<0>(sim.eam_pot.phiS, r2, phiTmp, dPhi, 0);
+              interpolateSpline<0>(sim.eam_pot.rhoS, r2, rhoTmp, dRho, 0);
           }
           else {
               // step = 3
               // TODO: this is not optimal
-              interpolateSpline(sim.eam_pot.rhoS, r2, rhoTmp, dRho);
+              interpolateSpline<0>(sim.eam_pot.rhoS, r2, rhoTmp, dRho, 0);
               int iOff = iBox * MAXATOMS + iAtom;
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 350
               dPhi = (__ldg(sim.eam_pot.dfEmbed + iOff) + fe[j]) * dRho;

@@ -127,10 +127,36 @@ void eamForce(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list
             int grid = (atoms_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
             int block = THREAD_ATOM_CTA;
             EAM_Force_thread_atom_NL<step, true><<<grid, block, 0, stream>>>(sim, atoms_list);
-        }else if (method == WARP_ATOM_NL) { 
-            int grid = (atoms_list.n * KERNEL_PACKSIZE + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
-            int block = THREAD_ATOM_CTA;
-            EAM_Force_warp_atom_NL<step, KERNEL_PACKSIZE, MAXNEIGHBORLISTSIZE, true><<<grid, block, 0, stream>>>(sim, atoms_list, sim.eam_pot.cutoff * sim.eam_pot.cutoff);
+        }else if (method == WARP_ATOM_NL) {
+
+            cudaDeviceSetCacheConfig(cudaFuncCachePreferShared); // necessary for good occupancy
+            int grid = (atoms_list.n * KERNEL_PACKSIZE + (WARP_ATOM_NL_CTA-1))/ (WARP_ATOM_NL_CTA);
+            int block = WARP_ATOM_NL_CTA;
+
+#define KERNEL(X,Y) EAM_Force_warp_atom_NL<step, KERNEL_PACKSIZE, MAXNEIGHBORLISTSIZE, true, (X), (Y)><<<grid, block, ((X)*sim.eam_pot.rhoS.n + (Y)*sim.eam_pot.phiS.n)*sizeof(real_t), stream>>>(sim, atoms_list, sim.eam_pot.cutoff * sim.eam_pot.cutoff);
+            if(sim.eam_pot.rhoS.prefetch_size == 0 && sim.eam_pot.phiS.prefetch_size == 0)
+            {
+                KERNEL(0,0);
+            }
+            else if(sim.eam_pot.rhoS.prefetch_size == 1 && sim.eam_pot.phiS.prefetch_size == 0)
+            {
+                KERNEL(1,0);
+            }
+            else if(sim.eam_pot.rhoS.prefetch_size == 2 && sim.eam_pot.phiS.prefetch_size == 0)
+            {
+                KERNEL(2,0);
+            }
+            else if(sim.eam_pot.rhoS.prefetch_size == 2 && sim.eam_pot.phiS.prefetch_size == 1)
+            {
+                KERNEL(2,1);
+            }
+            else if(sim.eam_pot.rhoS.prefetch_size == 2 && sim.eam_pot.phiS.prefetch_size == 2)
+            {
+                KERNEL(2,2);
+            }
+#undef KERNEL
+
+            cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
         }
 
     }
@@ -159,9 +185,9 @@ void eamForce(SimGpu sim, AtomListGpu atoms_list, int num_cells, int *cells_list
             int block = THREAD_ATOM_CTA;
             EAM_Force_thread_atom_NL<step, false><<<grid, block, 0, stream>>>(sim, atoms_list);
         }else if (method == WARP_ATOM_NL) { 
-            int grid = (atoms_list.n * KERNEL_PACKSIZE + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
-            int block = THREAD_ATOM_CTA;
-            EAM_Force_warp_atom_NL<step, KERNEL_PACKSIZE, MAXNEIGHBORLISTSIZE, false><<<grid, block, 0, stream>>>(sim, atoms_list, sim.eam_pot.cutoff * sim.eam_pot.cutoff);
+            int grid = (atoms_list.n * KERNEL_PACKSIZE + (WARP_ATOM_NL_CTA-1))/ (WARP_ATOM_NL_CTA);
+            int block = WARP_ATOM_NL_CTA;
+            EAM_Force_warp_atom_NL<step, KERNEL_PACKSIZE, MAXNEIGHBORLISTSIZE, false, 0, 0><<<grid, block, 0, stream>>>(sim, atoms_list, sim.eam_pot.cutoff * sim.eam_pot.cutoff);
         }
 
     }

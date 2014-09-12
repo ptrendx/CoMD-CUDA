@@ -134,13 +134,13 @@ void EAM_Force_warp_atom(SimGpu sim, AtomListGpu list)
     else
     {
         if(step == 1) {
-            interpolateSpline(sim.eam_pot.phiS, r2, phiTmp, dPhi);
-            interpolateSpline(sim.eam_pot.rhoS, r2, rhoTmp, dRho);
+            interpolateSpline<0>(sim.eam_pot.phiS, r2, phiTmp, dPhi, 0);
+            interpolateSpline<0>(sim.eam_pot.rhoS, r2, rhoTmp, dRho, 0);
         }
         else
         {
             //step 3
-            interpolateSpline(sim.eam_pot.rhoS, r2, rhoTmp,dRho);
+            interpolateSpline<0>(sim.eam_pot.rhoS, r2, rhoTmp,dRho, 0);
             dPhi = (sim.eam_pot.dfEmbed[iOff] + sim.eam_pot.dfEmbed[jOff]) * dRho;
         }
 
@@ -182,11 +182,43 @@ void EAM_Force_warp_atom(SimGpu sim, AtomListGpu list)
 
 
 /// templated for the 1st and 3rd EAM passes using the neighborlist
-template<int step, int packSize, int maxNeighbors, bool spline>
+template<int step, int packSize, int maxNeighbors, bool spline, int prefRho, int prefPhi>
 __global__
-__launch_bounds__(THREAD_ATOM_CTA, WARP_ATOM_NL_CTAS)
+__launch_bounds__(WARP_ATOM_NL_CTA,WARP_ATOM_NL_CTAS)
 void EAM_Force_warp_atom_NL(SimGpu sim, AtomListGpu list, real_t rCut2)
 {
+    extern __shared__ real_t prefetch_table[];
+
+    real_t * prefetch_rho = prefetch_table;
+    real_t * prefetch_phi;
+    if(step != 3)
+        prefetch_phi = prefetch_rho + prefRho * sim.eam_pot.rhoS.n;
+    
+    if(prefRho > 0)
+    {
+        for(int i = threadIdx.x; i < sim.eam_pot.rhoS.n; i += blockDim.x)
+        {
+            prefetch_rho[i] = sim.eam_pot.rhoS.coefficients[i];
+            if(prefRho == 2)
+            {
+                prefetch_rho[i + sim.eam_pot.rhoS.n] = sim.eam_pot.rhoS.coefficients[i + sim.eam_pot.rhoS.n];
+            }
+        }
+    }
+    if(prefPhi > 0 && step != 3)
+    {
+        for(int i = threadIdx.x; i < sim.eam_pot.phiS.n; i += blockDim.x)
+        {
+            prefetch_phi[i] = sim.eam_pot.phiS.coefficients[i];
+            if(prefPhi == 2)
+            {
+                prefetch_phi[i + sim.eam_pot.phiS.n] = sim.eam_pot.phiS.coefficients[i + sim.eam_pot.phiS.n];
+            }
+        }
+    }
+    if(prefPhi > 0 || prefRho > 0)
+        __syncthreads();
+    
     int tid = (blockIdx.x * blockDim.x + threadIdx.x)/packSize; 
     if (tid >= list.n) return;
     // compute box ID and local atom ID
@@ -280,14 +312,19 @@ void EAM_Force_warp_atom_NL(SimGpu sim, AtomListGpu list, real_t rCut2)
             else
             {
                 if(step == 1) {
-                    interpolateSpline(sim.eam_pot.phiS, r2, phiTmp, dPhi);
-                    interpolateSpline(sim.eam_pot.rhoS, r2, rhoTmp, dRho);
+                    interpolateSpline<prefPhi>(sim.eam_pot.phiS, r2, phiTmp, dPhi, prefetch_phi);
+                    interpolateSpline<prefRho>(sim.eam_pot.rhoS, r2, rhoTmp, dRho, prefetch_rho);
                 }
                 else
                 {
                     //step 3
-                    interpolateSpline(sim.eam_pot.rhoS, r2, rhoTmp,dRho);
+                    interpolateSpline<prefRho>(sim.eam_pot.rhoS, r2, rhoTmp,dRho, prefetch_rho);
+
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 350  
+                    dPhi = (__ldg(sim.eam_pot.dfEmbed + iOff) + __ldg(sim.eam_pot.dfEmbed + jOff)) * dRho;
+#else
                     dPhi = (sim.eam_pot.dfEmbed[iOff] + sim.eam_pot.dfEmbed[jOff]) * dRho;
+#endif
                 }
 
             }
@@ -327,7 +364,7 @@ void EAM_Force_warp_atom_NL(SimGpu sim, AtomListGpu list, real_t rCut2)
         }
     }
 #else
-    __shared__ real_t smem[THREAD_ATOM_CTA];
+    __shared__ real_t smem[WARP_ATOM_NL_CTA];
     for(int j = 1; j < 32; j *= 2)
     {
         if(packSize > j)

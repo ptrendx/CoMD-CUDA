@@ -30,19 +30,20 @@
 #define THREAD_ATOM_CTA         128
 #define WARP_ATOM_CTA		128
 #define CTA_CELL_CTA		128
+#define WARP_ATOM_NL_CTA    640
 
 // NOTE: the following is tuned for GK110
 #ifdef DOUBLE
 #define THREAD_ATOM_ACTIVE_CTAS 	10	// 62%
 #define WARP_ATOM_ACTIVE_CTAS 		12	// 75%
 #define CTA_CELL_ACTIVE_CTAS 		10	// 62%
-#define WARP_ATOM_NL_CTAS            9  // 56%
+#define WARP_ATOM_NL_CTAS            2  // 56%
 #else
 // 100% occupancy for SP
 #define THREAD_ATOM_ACTIVE_CTAS 	16
 #define WARP_ATOM_ACTIVE_CTAS 		16
 #define CTA_CELL_ACTIVE_CTAS 		16
-#define WARP_ATOM_NL_CTAS           16
+#define WARP_ATOM_NL_CTAS           3
 #endif
 
 //log_2(x)
