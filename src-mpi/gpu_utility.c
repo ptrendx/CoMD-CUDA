@@ -182,6 +182,8 @@ void AllocateGpu(SimFlat *sim, int do_eam, real_t skinDistance)
   cudaMalloc((void**)&gpu->atoms.f.z, f_size);
 
   cudaMalloc((void**)&gpu->atoms.e, f_size);
+  cudaMalloc((void**)&gpu->atoms.r2, r_size);
+
   cudaMalloc((void**)&gpu->d_updateLinkCellsRequired, sizeof(int));
   cudaMemset(gpu->d_updateLinkCellsRequired, 0, sizeof(int));
 

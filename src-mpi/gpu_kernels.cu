@@ -58,6 +58,24 @@
 #include "gpu_kernels.h"
 #undef EXTERN_C
 
+__global__
+void compute_r2(SimGpu sim, int N)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if(tid >= N) return;
+
+    int iOff = tid;
+
+    real_t irx = sim.atoms.r.x[iOff];
+    real_t iry = sim.atoms.r.y[iOff];
+    real_t irz = sim.atoms.r.z[iOff];
+
+
+    real_t r2 = irx*irx + iry*iry + irz*irz;
+    
+    sim.atoms.r2[iOff] = r2;
+}
+
 extern "C"
 void ljForceGpu(SimGpu sim, int interpolation, int num_cells, int * cells_list, int method)
 {
@@ -76,13 +94,17 @@ void ljForceGpu(SimGpu sim, int interpolation, int num_cells, int * cells_list, 
   }
   else if(method == CTA_CELL)
   {
+      int grid_tmp = (sim.boxes.nTotalBoxes * MAXATOMS + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
+      int block = THREAD_ATOM_CTA;
+
+      compute_r2<<<grid_tmp,block>>>(sim, sim.boxes.nTotalBoxes * MAXATOMS);
       int grid = num_cells;
-      int block = CTA_CELL_CTA;
+      block = CTA_CELL_CTA;
       
       real_t sigma = sim.lj_pot.sigma;
 
       const real_t s6 = sigma*sigma*sigma*sigma*sigma*sigma;
-
+      
       LJ_Force_cta_cell<<<grid, block>>>(sim, cells_list, sim.lj_pot.cutoff*sim.lj_pot.cutoff, s6);
   }
   if(method == CTA_CELL)

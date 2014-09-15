@@ -67,4 +67,8 @@
 
 #define VECTOR_WIDTH 4
 
+//size of shared memory used in cta_cell kernel for Lennard-Jones
+//it can't be less than CTA_CELL_CTA
+#define SHARED_SIZE_CTA_CELL 128 
+
 #endif

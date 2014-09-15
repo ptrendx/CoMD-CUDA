@@ -148,6 +148,7 @@ typedef struct AtomsGpuSt{
   vec_t p;			// atoms momentum
   vec_t f;			// atoms forces
   real_t *e;		// atoms energies
+  real_t *r2;
   int *iSpecies;  // atoms species id
   int *gid;			// atoms global id
   NeighborListGpu neighborList;

@@ -30,9 +30,10 @@ __global__
 __launch_bounds__(CTA_CELL_CTA, CTA_CELL_ACTIVE_CTAS)
 void LJ_Force_cta_cell(SimGpu sim, int * cells_list, real_t rCut2, real_t s6)
 {
-  __shared__ real_t otherX[MAXATOMS];
-  __shared__ real_t otherY[MAXATOMS];
-  __shared__ real_t otherZ[MAXATOMS];
+  __shared__ real_t otherX[SHARED_SIZE_CTA_CELL];
+  __shared__ real_t otherY[SHARED_SIZE_CTA_CELL];
+  __shared__ real_t otherZ[SHARED_SIZE_CTA_CELL];
+  __shared__ real_t otherR2[SHARED_SIZE_CTA_CELL];
 
   // compute box ID and local atom ID
   const int iBox = (cells_list == NULL)? blockIdx.x: cells_list[blockIdx.x]; 
@@ -52,58 +53,70 @@ void LJ_Force_cta_cell(SimGpu sim, int * cells_list, real_t rCut2, real_t s6)
       real_t ify = 0;
       real_t ifz = 0;
       real_t ie = 0;
+      
+      real_t fr_sum = 0;
 
       // fetch position
-      int iOff = iBox * MAXATOMS + iAtom;
+      const int iOff = iBox * MAXATOMS + iAtom;
 
-      real_t irx = sim.atoms.r.x[iOff];
-      real_t iry = sim.atoms.r.y[iOff];
-      real_t irz = sim.atoms.r.z[iOff];
+      const real_t irx = sim.atoms.r.x[iOff];
+      const real_t iry = sim.atoms.r.y[iOff];
+      const real_t irz = sim.atoms.r.z[iOff];
+
+      const real_t myR2 = 0.5f*(irx*irx + iry*iry + irz*irz);
+
       // loop over my neighbor cells
       for (int j = 0; j < N_MAX_NEIGHBORS; j++) 
       {
           const int jBox = sim.neighbor_cells[iBox * N_MAX_NEIGHBORS + j];
-          __syncthreads();
-          //Fetch atom positions
-#pragma unroll
-          for(int i = 0; i < MAXATOMS; i += CTA_CELL_CTA)
+          for(int base = 0; base < MAXATOMS; base += SHARED_SIZE_CTA_CELL)
           {
-              otherX[i+threadIdx.x] = sim.atoms.r.x[jBox*MAXATOMS + i + threadIdx.x];
-              otherY[i+threadIdx.x] = sim.atoms.r.y[jBox*MAXATOMS + i + threadIdx.x];
-              otherZ[i+threadIdx.x] = sim.atoms.r.z[jBox*MAXATOMS + i + threadIdx.x];
-          }
-          __syncthreads();
-          if(iAtom >= nAtoms)
-              continue;
-          // loop over all atoms in the neighbor cell 
-          for (int jAtom = 0; jAtom < sim.boxes.nAtoms[jBox]; jAtom++) 
-          {  
-              real_t dx = irx - otherX[jAtom];
-              real_t dy = iry - otherY[jAtom];
-              real_t dz = irz - otherZ[jAtom];
-
-              // distance^2
-              real_t r2 = dx*dx + dy*dy + dz*dz;
-
-              // no divide by zero
-              if (r2 <= rCut2 && r2 != 0.0f)  
+              __syncthreads();
+              //Fetch atom positions
+#pragma unroll
+              for(int i = 0; i < SHARED_SIZE_CTA_CELL; i += CTA_CELL_CTA)
               {
-                  r2 = 1.0f/r2;
-                  real_t r6 = s6 * (r2*r2*r2);
-                  real_t eLocal = r6 * (r6 - 1.0f) - eShift;
-
-                  // update energy
-                  ie += 0.5f * eLocal;
-                  // different formulation to avoid sqrt computation
-                  real_t fr = r6*r2*(48.0f*r6 - 24.0f);
-
-                  // update forces
-                  ifx += fr * dx;
-                  ify += fr * dy;
-                  ifz += fr * dz;
+                  otherX[i+threadIdx.x] = sim.atoms.r.x[jBox*MAXATOMS + i + threadIdx.x + base];
+                  otherY[i+threadIdx.x] = sim.atoms.r.y[jBox*MAXATOMS + i + threadIdx.x + base];
+                  otherZ[i+threadIdx.x] = sim.atoms.r.z[jBox*MAXATOMS + i + threadIdx.x + base];
+                  otherR2[i+threadIdx.x] = sim.atoms.r2[jBox*MAXATOMS + i + threadIdx.x + base];
               }
-          } // loop over all atoms
+              __syncthreads();
+              if(iAtom >= nAtoms)
+                  continue;
+              int maxN = SHARED_SIZE_CTA_CELL + base < sim.boxes.nAtoms[jBox]?SHARED_SIZE_CTA_CELL:sim.boxes.nAtoms[jBox]-base;
+              // loop over all atoms in the neighbor cell 
+              for (int jAtom = 0; jAtom < maxN; jAtom++) 
+              {  
+                  // distance^2
+                  real_t r2 = 2.f*(myR2 - irx*otherX[jAtom] - iry*otherY[jAtom] - irz*otherZ[jAtom]) + otherR2[jAtom];
+                  // no divide by zero
+                  if (r2 <= rCut2 && r2 > 1e-2f)  
+                  {
+                      r2 = 1.0f/r2;
+                      real_t r6 = s6 * (r2*r2*r2);
+                      real_t eLocal = r6 * (r6 - 1.0f) - eShift;
+
+                      // update energy
+                      ie += 0.5f * eLocal;
+                      // different formulation to avoid sqrt computation
+                      real_t fr = r6*r2*(48.0f*r6 - 24.0f);
+
+                      // update forces
+                      ifx -= fr * otherX[jAtom];
+                      ify -= fr * otherY[jAtom];
+                      ifz -= fr * otherZ[jAtom];
+
+                      fr_sum += fr;
+                  }
+              } // loop over all atoms
+          }
       } // loop over neighbor cells
+
+      ifx += fr_sum * irx;
+      ify += fr_sum * iry;
+      ifz += fr_sum * irz;
+
       sim.atoms.f.x[iOff] = ifx * epsilon;
       sim.atoms.f.y[iOff] = ify * epsilon;
       sim.atoms.f.z[iOff] = ifz * epsilon;
