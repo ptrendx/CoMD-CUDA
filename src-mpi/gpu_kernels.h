@@ -6,7 +6,7 @@
 #include <cuda_runtime.h>
 
 
-EXTERN_C void ljForceGpu(SimGpu sim, int interpolation);
+EXTERN_C void ljForceGpu(SimGpu sim, int interpolation, int num_cells, int * cells_list, int method);
 
 EXTERN_C void updateNeighborsGpu(SimGpu sim, int * temp);
 EXTERN_C void updateNeighborsGpuAsync(SimGpu sim, int * temp, int nCells, int * cellList, cudaStream_t stream);

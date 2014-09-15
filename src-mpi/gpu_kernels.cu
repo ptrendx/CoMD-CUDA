@@ -43,6 +43,7 @@
 #include "gpu_neighborList.h"
 
 #include "gpu_lj_thread_atom.h"
+#include "gpu_lj_cta_cell.h"
 #include "gpu_eam_thread_atom.h"
 #include "gpu_eam_warp_atom.h"
 #include "gpu_eam_cta_cell.h"
@@ -58,15 +59,34 @@
 #undef EXTERN_C
 
 extern "C"
-void ljForceGpu(SimGpu sim, int interpolation)
+void ljForceGpu(SimGpu sim, int interpolation, int num_cells, int * cells_list, int method)
 {
-  cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
-  int grid = (sim.a_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
-  int block = THREAD_ATOM_CTA;
-  if(interpolation == 0)
-      LJ_Force_thread_atom<<<grid, block>>>(sim, sim.a_list);
-  else
-      LJ_Force_thread_atom_interpolation<<<grid, block>>>(sim, sim.a_list);
+    if(method != CTA_CELL)
+        cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
+    else
+        cudaDeviceSetCacheConfig(cudaFuncCachePreferShared);
+  if(method == THREAD_ATOM)
+  {
+      int grid = (sim.a_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
+      int block = THREAD_ATOM_CTA;
+      if(interpolation == 0)
+          LJ_Force_thread_atom<<<grid, block>>>(sim, sim.a_list);
+      else
+          LJ_Force_thread_atom_interpolation<<<grid, block>>>(sim, sim.a_list);
+  }
+  else if(method == CTA_CELL)
+  {
+      int grid = num_cells;
+      int block = CTA_CELL_CTA;
+      
+      real_t sigma = sim.lj_pot.sigma;
+
+      const real_t s6 = sigma*sigma*sigma*sigma*sigma*sigma;
+
+      LJ_Force_cta_cell<<<grid, block>>>(sim, cells_list, sim.lj_pot.cutoff*sim.lj_pot.cutoff, s6);
+  }
+  if(method == CTA_CELL)
+      cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
 }
 
 template<int step>
