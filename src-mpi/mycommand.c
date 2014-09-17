@@ -247,6 +247,7 @@ Command parseCommandLine(int argc, char** argv)
    addArg("gpuProfile", 's', 0, 'i',  &(cmd.gpuProfile),   0,             "profiling mode: reboxing disabled, single kernel run");
    addArg("ljInterpolation", 'I', 0, 'i', &(cmd.ljInterpolation), 0,   "compute Lennard-Jones potential using interpolation (gpu only)");
    addArg("spline", 'P', 0, 'i', &(cmd.spline), 0, "use splines for interpolation (gpu only)");
+   addArg("usePairlist", 'L', 0, 'i', &(cmd.usePairlist), 0, "use pairlists for cta_cell method in Lennard-Jones computation");
 
    processArgs(argc,argv);
 

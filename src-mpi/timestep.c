@@ -219,6 +219,12 @@ void redistributeAtoms(SimFlat* sim)
 
 void redistributeAtomsGpu(SimFlat* sim)
 { 
+   if(sim->usePairlist)
+   {
+       int pairlistUpdateRequired = pairlistUpdateRequiredGpu(&(sim->gpu));
+       sim->gpu.genPairlist = pairlistUpdateRequired;
+   }
+
    updateLinkCellsGpu(sim);
 
    // cell lists are updated 

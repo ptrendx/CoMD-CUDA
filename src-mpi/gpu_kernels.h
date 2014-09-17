@@ -6,7 +6,7 @@
 #include <cuda_runtime.h>
 
 
-EXTERN_C void ljForceGpu(SimGpu sim, int interpolation, int num_cells, int * cells_list, int method);
+EXTERN_C void ljForceGpu(SimGpu * sim, int interpolation, int num_cells, int * cells_list,real_t plcutoff, int method);
 
 EXTERN_C void updateNeighborsGpu(SimGpu sim, int * temp);
 EXTERN_C void updateNeighborsGpuAsync(SimGpu sim, int * temp, int nCells, int * cellList, cudaStream_t stream);
@@ -33,6 +33,7 @@ EXTERN_C void getAtomMsgSoAPtr(char* const buffer, AtomMsgSoA *atomMsg, int n);
 
 EXTERN_C void buildNeighborListGpu(SimGpu* sim, int method, int boundaryFlag); //TODO rename flag (REFACTORING)
 EXTERN_C int neighborListUpdateRequiredGpu(SimGpu* sim);
+EXTERN_C int pairlistUpdateRequiredGpu(SimGpu* sim);
 
 // computes local potential and kinetic energies
 EXTERN_C void computeEnergy(SimFlat *sim, real_t *eLocal);

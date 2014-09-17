@@ -37,6 +37,8 @@ typedef struct CommandSt
 
    int ljInterpolation; //!< compute Lennard-Jones potential using interpolation
    int spline;
+
+   int usePairlist;
 } Command;
 
 /// Process command line arguments into an easy to handle structure.

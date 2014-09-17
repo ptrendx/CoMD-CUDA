@@ -59,7 +59,7 @@
 #undef EXTERN_C
 
 extern "C"
-void ljForceGpu(SimGpu sim, int interpolation, int num_cells, int * cells_list, int method)
+void ljForceGpu(SimGpu * sim, int interpolation, int num_cells, int * cells_list, real_t plcutoff, int method)
 {
     if(method != CTA_CELL)
         cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
@@ -67,23 +67,47 @@ void ljForceGpu(SimGpu sim, int interpolation, int num_cells, int * cells_list, 
         cudaDeviceSetCacheConfig(cudaFuncCachePreferShared);
   if(method == THREAD_ATOM)
   {
-      int grid = (sim.a_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
+      int grid = (sim->a_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
       int block = THREAD_ATOM_CTA;
       if(interpolation == 0)
-          LJ_Force_thread_atom<<<grid, block>>>(sim, sim.a_list);
+          LJ_Force_thread_atom<<<grid, block>>>(*sim, (*sim).a_list);
       else
-          LJ_Force_thread_atom_interpolation<<<grid, block>>>(sim, sim.a_list);
+          LJ_Force_thread_atom_interpolation<<<grid, block>>>(*sim, (*sim).a_list);
   }
   else if(method == CTA_CELL)
   {
-      int grid = num_cells;
-      int block = CTA_CELL_CTA;
-      
-      real_t sigma = sim.lj_pot.sigma;
+      if(!sim->usePairlist)
+      {
+          int grid = num_cells;
+          int block = CTA_CELL_CTA;
+            
+          real_t sigma = sim->lj_pot.sigma;
+          
+          const real_t s6 = sigma*sigma*sigma*sigma*sigma*sigma;
 
-      const real_t s6 = sigma*sigma*sigma*sigma*sigma*sigma;
+          LJ_Force_cta_cell<<<grid, block>>>(*sim, cells_list, sim->lj_pot.cutoff*sim->lj_pot.cutoff, s6);
+      }
+      else
+      {
+          int grid = num_cells;
+          int block = CTA_CELL_CTA;
 
-      LJ_Force_cta_cell<<<grid, block>>>(sim, cells_list, sim.lj_pot.cutoff*sim.lj_pot.cutoff, s6);
+          real_t sigma = sim->lj_pot.sigma;
+
+          const real_t s6 = sigma*sigma*sigma*sigma*sigma*sigma;
+          
+          if(sim->genPairlist)
+          {
+              LJ_Force_cta_cell_pairlist<true, PAIRLIST_ATOMS_PER_INT><<<grid, block>>>(*sim, cells_list, sim->lj_pot.cutoff*sim->lj_pot.cutoff, s6, plcutoff);
+              sim->genPairlist = 0;
+              sim->atoms.neighborList.forceRebuildFlag = 0;
+          }
+          else
+          {
+              LJ_Force_cta_cell_pairlist<false, PAIRLIST_ATOMS_PER_INT><<<grid, block>>>(*sim, cells_list, sim->lj_pot.cutoff*sim->lj_pot.cutoff, s6, plcutoff);
+          }
+          
+      }
   }
   if(method == CTA_CELL)
       cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
@@ -394,7 +418,6 @@ extern "C"
 void updateLinkCellsGpu(SimFlat *sim)
 {
   int *flags = sim->flags;
-
   //empty haloCells
   cudaMemset(sim->gpu.boxes.nAtoms + sim->boxes->nLocalBoxes, 0, (sim->boxes->nTotalBoxes - sim->boxes->nLocalBoxes) * sizeof(int));
 
@@ -404,12 +427,17 @@ void updateLinkCellsGpu(SimFlat *sim)
   // 1 thread updates 1 atom
   int grid = (sim->gpu.a_list.n + (THREAD_ATOM_CTA-1)) / THREAD_ATOM_CTA;
   int block = THREAD_ATOM_CTA;
-  UpdateLinkCells<<<grid, block>>>(sim->gpu, sim->gpu.boxes, flags);
-
+  if(sim->usePairlist)
+      UpdateLinkCells<true><<<grid, block>>>(sim->gpu, sim->gpu.boxes, flags);
+  else
+      UpdateLinkCells<false><<<grid, block>>>(sim->gpu, sim->gpu.boxes, flags);
   // 1 thread updates 1 cell
   grid = (sim->boxes->nLocalBoxes + (THREAD_ATOM_CTA-1)) / THREAD_ATOM_CTA;
   block = THREAD_ATOM_CTA;
-  CompactAtoms<<<grid, block>>>(sim->gpu, sim->boxes->nLocalBoxes, flags);
+  if(sim->usePairlist)
+      CompactAtoms<true><<<grid, block>>>(sim->gpu, sim->boxes->nLocalBoxes, flags);
+  else
+      CompactAtoms<false><<<grid, block>>>(sim->gpu, sim->boxes->nLocalBoxes, flags);
 
   // update max # of atoms per cell
   cudaMemcpy(&sim->gpu.max_atoms_cell, &flags[sim->boxes->nLocalBoxes * MAXATOMS], sizeof(int), cudaMemcpyDeviceToHost);
@@ -643,9 +671,62 @@ void updateNeighborListRequriedKernel(SimGpu sim, int* updateNeighborListRequire
   real_t dx = sim.atoms.r.x[iOff] - sim.atoms.neighborList.lastR.x[tid];
   real_t dy = sim.atoms.r.y[iOff] - sim.atoms.neighborList.lastR.y[tid];
   real_t dz = sim.atoms.r.z[iOff] - sim.atoms.neighborList.lastR.z[tid];
- 
+
   if( (dx*dx + dy*dy + dz*dz) > sim.atoms.neighborList.skinDistanceHalf2 )
           *updateNeighborListRequired = 1;
+}
+
+__global__
+__launch_bounds__(CTA_CELL_CTA,CTA_CELL_ACTIVE_CTAS)
+void updatePairlistRequiredKernel(SimGpu sim, int * updatePairlistRequired)
+{
+    const int iBox = blockIdx.x;
+    const int nAtoms = sim.boxes.nAtoms[iBox];
+
+    for(int iAtom = threadIdx.x; iAtom < nAtoms; iAtom += blockDim.x)
+    {
+        int iOff = iBox * MAXATOMS + iAtom;
+
+        real_t dx = sim.atoms.r.x[iOff] - sim.atoms.neighborList.lastR.x[iOff];
+        real_t dy = sim.atoms.r.y[iOff] - sim.atoms.neighborList.lastR.y[iOff];
+        real_t dz = sim.atoms.r.z[iOff] - sim.atoms.neighborList.lastR.z[iOff];
+
+        if( (dx*dx + dy*dy + dz*dz) > sim.atoms.neighborList.skinDistanceHalf2 )
+        {
+            *updatePairlistRequired = 1;
+            return;
+        }
+
+    }
+}
+
+// Function checks 
+extern "C"
+int pairlistUpdateRequiredGpu(SimGpu * sim)
+{
+    if(sim->atoms.neighborList.forceRebuildFlag == 1)
+    {
+        sim->atoms.neighborList.updateNeighborListRequired = 1;
+    }
+    else if(sim->atoms.neighborList.updateNeighborListRequired == -1)
+    {
+        int grid = sim->boxes.nLocalBoxes;
+        int block = CTA_CELL_CTA;
+        int *d_updatePairlistRequired;
+        int h_updatePairlistRequired; 
+        cudaMalloc(&d_updatePairlistRequired, sizeof(int));
+        cudaMemset(d_updatePairlistRequired, 0, sizeof(int));
+
+        updatePairlistRequiredKernel<<<grid, block>>>(*sim, d_updatePairlistRequired);
+
+        cudaMemcpy(&h_updatePairlistRequired,d_updatePairlistRequired, sizeof(int), cudaMemcpyDeviceToHost);
+
+        int tmpUpdatePairlistRequired = h_updatePairlistRequired;
+        
+        sim->atoms.neighborList.updateNeighborListRequired = tmpUpdatePairlistRequired;
+    }
+
+    return sim->atoms.neighborList.updateNeighborListRequired;
 }
 
 /// \param [inout] neighborList NeighborList (the only value that might be changed is updateNeighborListRequired
@@ -653,7 +734,6 @@ void updateNeighborListRequriedKernel(SimGpu sim, int* updateNeighborListRequire
 extern "C"
 int neighborListUpdateRequiredGpu(SimGpu* sim)
 {
-        
         if(sim->atoms.neighborList.forceRebuildFlag== 1){
                 sim->atoms.neighborList.updateNeighborListRequired = 1; 
         }else if(sim->atoms.neighborList.updateNeighborListRequired == -1){
@@ -661,7 +741,6 @@ int neighborListUpdateRequiredGpu(SimGpu* sim)
                 //only do a real neighborlistupdate check if the particles have moved (indicated by updateNeighborListRequired == -1)
                 int grid = (sim->a_list.n + (THREAD_ATOM_CTA-1))/ THREAD_ATOM_CTA;
                 int block = THREAD_ATOM_CTA;
-
                 int *d_updateNeighborListRequired;
                 int h_updateNeighborListRequired; 
                 cudaMalloc(&d_updateNeighborListRequired, sizeof(int));
@@ -677,7 +756,7 @@ int neighborListUpdateRequiredGpu(SimGpu* sim)
                 //all nodes have to do so.
 //                maxIntParallel(&h_updateNeighborListRequired, &tmpUpdateNeighborListRequired, 1); 
                 cudaFree(d_updateNeighborListRequired);
-
+                        
                 if(tmpUpdateNeighborListRequired > 0)
                         sim->atoms.neighborList.updateNeighborListRequired = 1; 
                 else

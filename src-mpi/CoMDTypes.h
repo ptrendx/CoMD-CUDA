@@ -127,6 +127,10 @@ typedef struct SimFlatSt
 
    int ljInterpolation;     //<! compute Lennard-Jones potential using interpolation
    int spline;              //<! use splines for interpolation
+
+   int usePairlist;         //<! use pairlists for cta_cell method in Lennard-Jones computation
+
+   real_t skinDistance;
    
 } SimFlat;
 

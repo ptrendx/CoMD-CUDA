@@ -76,6 +76,8 @@ typedef struct LjPotentialGpuSt
 
    InterpolationObjectGpu lj_interpolation;
 
+   real_t plcutoff;        //!< cutoff for pairlist construction
+
 } LjPotentialGpu;
 
 
@@ -179,6 +181,11 @@ typedef struct SimGpuSt {
   // potentials
   LjPotentialGpu lj_pot;
   EamPotentialGpu eam_pot;
+
+  int * pairlist;
+
+  int genPairlist;
+  int usePairlist;
 
 } SimGpu;
 

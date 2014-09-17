@@ -216,7 +216,11 @@ void AllocateGpu(SimFlat *sim, int do_eam, real_t skinDistance)
   int nMaxHaloParticles = (sim->boxes->nTotalBoxes - sim->boxes->nLocalBoxes)*MAXATOMS;
   initHashTableGpu(&(gpu->d_hashTable), 2*nMaxHaloParticles);
 
-
+  //Allocate pairlist
+  if(sim->usePairlist)
+  { 
+      cudaMalloc((void**)&gpu->pairlist,nLocalBoxes * CTA_CELL_CTA/WARP_SIZE*N_MAX_NEIGHBORS * (MAXATOMS + PAIRLIST_ATOMS_PER_INT-1)/PAIRLIST_ATOMS_PER_INT * sizeof(int));
+  }
   // init EAM arrays
   if (do_eam)  
   {

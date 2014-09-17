@@ -42,16 +42,16 @@ void LJ_Force_cta_cell(SimGpu sim, int * cells_list, real_t rCut2, real_t s6)
   const real_t epsilon = sim.lj_pot.epsilon;
 
   const real_t rCut6 = s6 / (rCut2*rCut2*rCut2);
-  const real_t eShift = rCut6 * (rCut6 - 1.0);
+  const real_t eShift = rCut6 * (rCut6 - 1.0f);
 
   for(int iAtom = threadIdx.x; iAtom < MAXATOMS; iAtom += blockDim.x)
   {
 
       // zero out forces and energy
-      real_t ifx = 0;
-      real_t ify = 0;
-      real_t ifz = 0;
-      real_t ie = 0;
+      real_t ifx = 0.f;
+      real_t ify = 0.f;
+      real_t ifz = 0.f;
+      real_t ie = 0.f;
       
 
       // fetch position
@@ -89,17 +89,18 @@ void LJ_Force_cta_cell(SimGpu sim, int * cells_list, real_t rCut2, real_t s6)
 
                   // distance^2
                   real_t r2 = dx*dx + dy*dy + dz*dz;
+
                   // no divide by zero
-                  if (r2 <= rCut2 && r2 != 0.0)  
+                  if (r2 <= rCut2 && r2 != 0.0f)  
                   {
-                      r2 = 1.0/r2;
+                      r2 = 1.0f/r2;
                       real_t r6 = s6 * (r2*r2*r2);
-                      real_t eLocal = r6 * (r6 - 1.0) - eShift;
+                      real_t eLocal = r6 * (r6 - 1.0f) - eShift;
 
                       // update energy
-                      ie += 0.5 * eLocal;
+                      ie += 0.5f * eLocal;
                       // different formulation to avoid sqrt computation
-                      real_t fr = r6*r2*(48.0*r6 - 24.0);
+                      real_t fr = r6*r2*(48.0f*r6 - 24.0f);
 
                       // update forces
                       ifx += fr * dx;
@@ -115,7 +116,172 @@ void LJ_Force_cta_cell(SimGpu sim, int * cells_list, real_t rCut2, real_t s6)
       sim.atoms.f.y[iOff] = ify * epsilon;
       sim.atoms.f.z[iOff] = ifz * epsilon;
 
-      sim.atoms.e[iOff] = ie * 4 * epsilon;
+      sim.atoms.e[iOff] = ie * 4.f * epsilon;
   }
+}
+
+template<bool genPairlist, int atomsPerInt>
+__global__
+__launch_bounds__(CTA_CELL_CTA, CTA_CELL_ACTIVE_CTAS)
+void LJ_Force_cta_cell_pairlist(SimGpu sim, int * cells_list, real_t rCut2, real_t s6, real_t plcutoff)
+{
+    __shared__ volatile real_t otherX[CTA_CELL_CTA];
+    __shared__ volatile real_t otherY[CTA_CELL_CTA];
+    __shared__ volatile real_t otherZ[CTA_CELL_CTA];
+
+    // compute box ID and local atom ID
+    const int iBox = (cells_list == NULL)? blockIdx.x: cells_list[blockIdx.x]; 
+    const int nAtoms = sim.boxes.nAtoms[iBox];
+
+    // common constants for LJ potential
+    const real_t epsilon = sim.lj_pot.epsilon;
+
+    const real_t rCut6 = s6 / (rCut2*rCut2*rCut2);
+    const real_t eShift = rCut6 * (rCut6 - 1.0f);
+
+    const int laneid = get_lane_id();
+    const int  warpid = blockIdx.x * CTA_CELL_CTA/WARP_SIZE + get_warp_id();
+    const int warp_start = threadIdx.x & 96;
+
+    for(int iAtom = threadIdx.x; iAtom < MAXATOMS; iAtom += blockDim.x)
+    {
+        // zero out forces and energy
+        real_t ifx = 0.f;
+        real_t ify = 0.f;
+        real_t ifz = 0.f;
+        real_t ie = 0.f;
+
+
+        // fetch position
+        const int iOff = iBox * MAXATOMS + iAtom;
+
+        const real_t irx = sim.atoms.r.x[iOff];
+        const real_t iry = sim.atoms.r.y[iOff];
+        const real_t irz = sim.atoms.r.z[iOff];
+
+        if(genPairlist)
+        {
+            sim.atoms.neighborList.lastR.x[iOff] = irx;
+            sim.atoms.neighborList.lastR.y[iOff] = iry;
+            sim.atoms.neighborList.lastR.z[iOff] = irz;
+        }
+
+        // loop over my neighbor cells
+        for (int j = 0; j < N_MAX_NEIGHBORS; j++) 
+        {
+            const int jBox = sim.neighbor_cells[iBox * N_MAX_NEIGHBORS + j];
+            unsigned int flag;
+            unsigned int mask;
+            int base_shared = warp_start;
+            //MAXATOMS has to be multiple of PAIRLIST_STEP
+            for(int base = 0; base < MAXATOMS; base += PAIRLIST_STEP)
+            {
+                if(genPairlist)
+                {
+                    if(base % atomsPerInt == 0)
+                    {
+                        if(base != 0)
+                        {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 300
+                            flag |= __shfl_down(flag,1);
+                            flag |= __shfl_down(flag,2);
+                            flag |= __shfl_down(flag,4);
+                            flag |= __shfl_down(flag,8);
+                            flag |= __shfl_down(flag,16);
+                            if(threadIdx.x % 32 == 0)
+                                sim.pairlist[N_MAX_NEIGHBORS * MAXATOMS/atomsPerInt * warpid + j * MAXATOMS/atomsPerInt+(base-PAIRLIST_STEP)/atomsPerInt] = flag;
+#else
+                                    //TODO
+#endif
+                        }
+                        flag = 0;
+                        mask = 1;
+                    }
+                    else
+                    {
+                        mask <<= 1;
+                    }
+                }
+                else
+                {
+                    flag >>= 1;
+                    if(base % atomsPerInt == 0)
+                    {
+                        flag = sim.pairlist[N_MAX_NEIGHBORS * MAXATOMS/atomsPerInt * warpid + j * MAXATOMS/atomsPerInt+base/atomsPerInt];
+                    }
+                    if(flag & 1 == 0)
+                        continue;
+                }
+                //Fetch atom positions
+                //Warps download the same atoms to avoid synchronisation
+                //and false dependencies
+                if(base % WARP_SIZE == 0)
+                {
+                    otherX[threadIdx.x] = sim.atoms.r.x[jBox*MAXATOMS + laneid + base];
+                    otherY[threadIdx.x] = sim.atoms.r.y[jBox*MAXATOMS + laneid + base];
+                    otherZ[threadIdx.x] = sim.atoms.r.z[jBox*MAXATOMS + laneid + base];
+                    base_shared = warp_start;
+                }
+
+                if(iAtom >= nAtoms)
+                    continue;
+                int maxN =  (PAIRLIST_STEP + base < sim.boxes.nAtoms[jBox]?PAIRLIST_STEP:sim.boxes.nAtoms[jBox]-base) + base_shared;
+                // loop over all atoms stored in shared memory
+                for (int jAtom = base_shared; jAtom < maxN; jAtom++) 
+                {  
+                    real_t dx = irx - otherX[jAtom];
+                    real_t dy = iry - otherY[jAtom];
+                    real_t dz = irz - otherZ[jAtom];
+
+                    // distance^2
+                    real_t r2 = dx*dx + dy*dy + dz*dz;
+                    if(genPairlist && r2 <= plcutoff)
+                    {
+                        flag |= mask;
+                    }
+                    // no divide by zero
+                    if (r2 <= rCut2 && r2 != 0.0f)  
+                    {
+                        r2 = 1.0f/r2;
+                        real_t r6 = s6 * (r2*r2*r2);
+                        real_t eLocal = r6 * (r6 - 1.0f) - eShift;
+
+                        // update energy
+                        ie += 0.5f * eLocal;
+                        // different formulation to avoid sqrt computation
+                        real_t fr = r6*r2*(48.0f*r6 - 24.0f);
+
+                        // update forces
+                        ifx += fr * dx;
+                        ify += fr * dy;
+                        ifz += fr * dz;
+
+                    }
+                } // loop over all atoms
+                base_shared += PAIRLIST_STEP;
+            }
+            if(genPairlist)
+            {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 300
+                flag |= __shfl_down(flag,1);
+                flag |= __shfl_down(flag,2);
+                flag |= __shfl_down(flag,4);
+                flag |= __shfl_down(flag,8);
+                flag |= __shfl_down(flag,16);
+                if(threadIdx.x % 32 == 0)
+                    sim.pairlist[N_MAX_NEIGHBORS * MAXATOMS/atomsPerInt * warpid + j * MAXATOMS/atomsPerInt+(MAXATOMS-PAIRLIST_STEP)/atomsPerInt] = flag;
+#else
+                        //TODO
+#endif
+            }
+
+        } // loop over neighbor cells
+
+        sim.atoms.f.x[iOff] = ifx * epsilon;
+        sim.atoms.f.y[iOff] = ify * epsilon;
+        sim.atoms.f.z[iOff] = ifz * epsilon;
+        
+        sim.atoms.e[iOff] = ie * 4.f * epsilon;
+    }
 }
 
