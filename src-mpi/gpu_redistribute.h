@@ -465,12 +465,11 @@ void computeOffsets(int nlUpdateRequired, SimFlat* sim,
 {  
   int grid = (nBuf + (THREAD_ATOM_CTA-1)) / THREAD_ATOM_CTA;
   int block = THREAD_ATOM_CTA;
-
   // computeBoxIds(), compute, ... are required to assure sequential ordering!
-  if(nlUpdateRequired || sim->usePairlist){
+  if(nlUpdateRequired){
 
      computeBoxIds<<<grid, block, 0, stream>>>(sim->gpu.boxes, r, d_boxId, nBuf); //fill d_boxId with iBox for each atom
-     if(sim->method == THREAD_ATOM_NL || sim->method == WARP_ATOM_NL){
+     if(sim->method == THREAD_ATOM_NL || sim->method == WARP_ATOM_NL || sim->usePairlist){
         //compute iOff for each particle and store the result to iOffsetOut
         computeOffsetsUpdateReq<1><<<grid, block, 0, stream>>>(d_iOffset, nBuf, sim->gpu.boxes.nAtoms, d_boxId, sim->gpu);
         sim->gpu.d_hashTable.nEntriesPut += nBuf;

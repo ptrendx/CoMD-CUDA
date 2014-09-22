@@ -117,6 +117,7 @@ void LJ_Force_cta_cell(SimGpu sim, int * cells_list, real_t rCut2, real_t s6)
       sim.atoms.f.z[iOff] = ifz * epsilon;
 
       sim.atoms.e[iOff] = ie * 4.f * epsilon;
+
   }
 }
 
@@ -128,7 +129,6 @@ void LJ_Force_cta_cell_pairlist(SimGpu sim, int * cells_list, real_t rCut2, real
     __shared__ volatile real_t otherX[CTA_CELL_CTA];
     __shared__ volatile real_t otherY[CTA_CELL_CTA];
     __shared__ volatile real_t otherZ[CTA_CELL_CTA];
-
     // compute box ID and local atom ID
     const int iBox = (cells_list == NULL)? blockIdx.x: cells_list[blockIdx.x]; 
     const int nAtoms = sim.boxes.nAtoms[iBox];
@@ -140,7 +140,6 @@ void LJ_Force_cta_cell_pairlist(SimGpu sim, int * cells_list, real_t rCut2, real
     const real_t eShift = rCut6 * (rCut6 - 1.0f);
 
     const int laneid = get_lane_id();
-    const int  warpid = blockIdx.x * CTA_CELL_CTA/WARP_SIZE + get_warp_id();
     const int warp_start = threadIdx.x & 96;
 
     for(int iAtom = threadIdx.x; iAtom < MAXATOMS; iAtom += blockDim.x)
@@ -151,6 +150,7 @@ void LJ_Force_cta_cell_pairlist(SimGpu sim, int * cells_list, real_t rCut2, real
         real_t ifz = 0.f;
         real_t ie = 0.f;
 
+        const int  warpid = blockIdx.x * MAXATOMS/WARP_SIZE + (iAtom >> 5);
 
         // fetch position
         const int iOff = iBox * MAXATOMS + iAtom;
@@ -158,7 +158,6 @@ void LJ_Force_cta_cell_pairlist(SimGpu sim, int * cells_list, real_t rCut2, real
         const real_t irx = sim.atoms.r.x[iOff];
         const real_t iry = sim.atoms.r.y[iOff];
         const real_t irz = sim.atoms.r.z[iOff];
-
         if(genPairlist)
         {
             sim.atoms.neighborList.lastR.x[iOff] = irx;
@@ -170,29 +169,33 @@ void LJ_Force_cta_cell_pairlist(SimGpu sim, int * cells_list, real_t rCut2, real
         for (int j = 0; j < N_MAX_NEIGHBORS; j++) 
         {
             const int jBox = sim.neighbor_cells[iBox * N_MAX_NEIGHBORS + j];
-            unsigned int flag;
+            
+            unsigned int flag = 0;
             unsigned int mask;
             int base_shared = warp_start;
             //MAXATOMS has to be multiple of PAIRLIST_STEP
             for(int base = 0; base < MAXATOMS; base += PAIRLIST_STEP)
             {
+                //Fetch atom positions
+                //Warps download the same atoms to avoid synchronisation
+                //and false dependencies
+                if(base % WARP_SIZE == 0)
+                {
+                    otherX[threadIdx.x] = sim.atoms.r.x[jBox*MAXATOMS + laneid + base];
+                    otherY[threadIdx.x] = sim.atoms.r.y[jBox*MAXATOMS + laneid + base];
+                    otherZ[threadIdx.x] = sim.atoms.r.z[jBox*MAXATOMS + laneid + base];
+                    base_shared = warp_start;
+                }
+
+
                 if(genPairlist)
                 {
                     if(base % atomsPerInt == 0)
                     {
                         if(base != 0)
                         {
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 300
-                            flag |= __shfl_down(flag,1);
-                            flag |= __shfl_down(flag,2);
-                            flag |= __shfl_down(flag,4);
-                            flag |= __shfl_down(flag,8);
-                            flag |= __shfl_down(flag,16);
                             if(threadIdx.x % 32 == 0)
-                                sim.pairlist[N_MAX_NEIGHBORS * MAXATOMS/atomsPerInt * warpid + j * MAXATOMS/atomsPerInt+(base-PAIRLIST_STEP)/atomsPerInt] = flag;
-#else
-                                    //TODO
-#endif
+                                sim.pairlist[N_MAX_NEIGHBORS * ((MAXATOMS+atomsPerInt-1)/atomsPerInt) * warpid + j * ((MAXATOMS+atomsPerInt-1)/atomsPerInt)+(base-PAIRLIST_STEP)/atomsPerInt] = flag;
                         }
                         flag = 0;
                         mask = 1;
@@ -207,22 +210,14 @@ void LJ_Force_cta_cell_pairlist(SimGpu sim, int * cells_list, real_t rCut2, real
                     flag >>= 1;
                     if(base % atomsPerInt == 0)
                     {
-                        flag = sim.pairlist[N_MAX_NEIGHBORS * MAXATOMS/atomsPerInt * warpid + j * MAXATOMS/atomsPerInt+base/atomsPerInt];
+                        flag = sim.pairlist[N_MAX_NEIGHBORS * ((MAXATOMS+atomsPerInt-1)/atomsPerInt) * warpid + j * ((MAXATOMS+atomsPerInt-1)/atomsPerInt)+base/atomsPerInt];
                     }
-                    if(flag & 1 == 0)
+                    if((flag & 1) == 0)
+                    {
+                        base_shared += PAIRLIST_STEP;
                         continue;
+                    }
                 }
-                //Fetch atom positions
-                //Warps download the same atoms to avoid synchronisation
-                //and false dependencies
-                if(base % WARP_SIZE == 0)
-                {
-                    otherX[threadIdx.x] = sim.atoms.r.x[jBox*MAXATOMS + laneid + base];
-                    otherY[threadIdx.x] = sim.atoms.r.y[jBox*MAXATOMS + laneid + base];
-                    otherZ[threadIdx.x] = sim.atoms.r.z[jBox*MAXATOMS + laneid + base];
-                    base_shared = warp_start;
-                }
-
                 if(iAtom >= nAtoms)
                     continue;
                 int maxN =  (PAIRLIST_STEP + base < sim.boxes.nAtoms[jBox]?PAIRLIST_STEP:sim.boxes.nAtoms[jBox]-base) + base_shared;
@@ -235,9 +230,11 @@ void LJ_Force_cta_cell_pairlist(SimGpu sim, int * cells_list, real_t rCut2, real
 
                     // distance^2
                     real_t r2 = dx*dx + dy*dy + dz*dz;
-                    if(genPairlist && r2 <= plcutoff)
+
+                    if(genPairlist && __any(r2 <= plcutoff * plcutoff))
                     {
                         flag |= mask;
+                    
                     }
                     // no divide by zero
                     if (r2 <= rCut2 && r2 != 0.0f)  
@@ -255,24 +252,14 @@ void LJ_Force_cta_cell_pairlist(SimGpu sim, int * cells_list, real_t rCut2, real
                         ifx += fr * dx;
                         ify += fr * dy;
                         ifz += fr * dz;
-
                     }
                 } // loop over all atoms
                 base_shared += PAIRLIST_STEP;
             }
             if(genPairlist)
             {
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 300
-                flag |= __shfl_down(flag,1);
-                flag |= __shfl_down(flag,2);
-                flag |= __shfl_down(flag,4);
-                flag |= __shfl_down(flag,8);
-                flag |= __shfl_down(flag,16);
                 if(threadIdx.x % 32 == 0)
-                    sim.pairlist[N_MAX_NEIGHBORS * MAXATOMS/atomsPerInt * warpid + j * MAXATOMS/atomsPerInt+(MAXATOMS-PAIRLIST_STEP)/atomsPerInt] = flag;
-#else
-                        //TODO
-#endif
+                    sim.pairlist[N_MAX_NEIGHBORS * ((MAXATOMS+atomsPerInt-1)/atomsPerInt) * warpid + j * ((MAXATOMS+atomsPerInt-1)/atomsPerInt)+(MAXATOMS-PAIRLIST_STEP)/atomsPerInt] = flag;
             }
 
         } // loop over neighbor cells
@@ -282,6 +269,7 @@ void LJ_Force_cta_cell_pairlist(SimGpu sim, int * cells_list, real_t rCut2, real
         sim.atoms.f.z[iOff] = ifz * epsilon;
         
         sim.atoms.e[iOff] = ie * 4.f * epsilon;
+
     }
 }
 

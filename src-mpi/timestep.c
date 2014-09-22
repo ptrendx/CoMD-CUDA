@@ -66,6 +66,7 @@ double timestep(SimFlat* s, int nSteps, real_t dt)
       //TODO overlap redistribute with buildNeighborListInterior()
       startTimer(redistributeTimer);
       redistributeAtoms(s);
+
       stopTimer(redistributeTimer);
 
       //TODO overlap buildNeighborListBoundary with computeForce()
@@ -218,13 +219,36 @@ void redistributeAtoms(SimFlat* sim)
 }
 
 void redistributeAtomsGpu(SimFlat* sim)
-{ 
+{
+    cudaMemset(sim->gpu.boxes.nAtoms + sim->boxes->nLocalBoxes, 0, (sim->boxes->nTotalBoxes - sim->boxes->nLocalBoxes) * sizeof(int));
+
    if(sim->usePairlist)
    {
        int pairlistUpdateRequired = pairlistUpdateRequiredGpu(&(sim->gpu));
        sim->gpu.genPairlist = pairlistUpdateRequired;
-   }
+       if(pairlistUpdateRequired)
+       {
+           emptyHashTableGpu(&(sim->gpu.d_hashTable));
+           updateLinkCellsGpu(sim);
+       }
 
+       sim->gpu.d_hashTable.nEntriesGet = 0;
+
+       startTimer(atomHaloTimer);
+       haloExchange(sim->atomExchange, sim);
+       stopTimer(atomHaloTimer);
+
+
+
+           buildAtomListGpu(sim, sim->boundary_stream);
+       if(pairlistUpdateRequired)
+       {
+           // sort only boundary cells
+           sortAtomsGpu(sim, sim->boundary_stream);
+       }
+       return;
+   }
+   
    updateLinkCellsGpu(sim);
 
    // cell lists are updated 
